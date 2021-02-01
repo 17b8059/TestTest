@@ -1,47 +1,24 @@
-/*****
- 
- All the resources for this project:
- https://rntlab.com/
- 
-*****/
-
-// Loading the ESP8266WiFi library and the PubSubClient library
 #include <ESP8266WiFi.h>
+#include "secrets.h"
 #include <PubSubClient.h>
-#include "DHT.h"
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include "DHT.h"
+#include <ThingSpeak.h>
 
-// Uncomment one of the lines bellow for whatever DHT sensor type you're using!
-//#define DHTTYPE DHT11   // DHT 11
-//#define DHTTYPE DHT21   // DHT 21 (AM2301)
-#define DHTTYPE DHT22   // DHT 22  (AM2302), AM2321
+char ssid[] = SECRET_SSID;   // your network SSID (name) 
+char pass[] = SECRET_PASS;   // your network password
+WiFiClient client;
 
-//For capacitive soil sensor
-const int AirValue = 865;   //you need to replace this value with Value_1
-const int WaterValue = 590;  //you need to replace this value with Value_2
-int soilMoistureValue = 0;
-int soilmoisturepercent= 0;
+unsigned long myChannelNumber = SECRET_CH_ID;
+const char * myWriteAPIKey = SECRET_WRITE_APIKEY;
+
+// DHT
+#define DHTPIN 5 // Pin D1
+#define DHTTYPE DHT22
 
 // GPIO where the DS18B20 (soil temperature) is connected to
-const int oneWireBus = D3;   
-
-// Change the credentials below, so your ESP8266 connects to your router
-const char* ssid = "WiFi@iCentre";
-const char* password = "DARe-iCentre@2020#";
-
-// Change the variable to your Raspberry Pi IP address, so it connects to your MQTT broker
-const char* mqtt_server = "10.0.104.211";
-
-// Initializes the espClient
-WiFiClient espClient;
-PubSubClient client(espClient);
-
-// DHT Sensor
-const int DHTPin = 5;
-
-// Initialize DHT sensor.
-DHT dht(DHTPin, DHTTYPE);
+const int oneWireBus = 0;  // Pin D3
 
 // Setup a oneWire instance to communicate with any OneWire devices
 OneWire oneWire(oneWireBus);
@@ -49,172 +26,147 @@ OneWire oneWire(oneWireBus);
 // Pass our oneWire reference to Dallas Temperature sensor 
 DallasTemperature sensors(&oneWire);
 
-// Timers auxiliar variables
-long now = millis();
-long lastMeasure = 0;
+// utlrasonic pinout
+#define ULTRASONIC_TRIG_PIN 12   // pin TRIG to D6
+#define ULTRASONIC_ECHO_PIN 14   // pin ECHO to D5
 
-char data[100];
+// defines variables
+long duration;
+int distance;
 
-// Don't change the function below. This functions connects your ESP8266 to your router
-void setup_wifi() {
-  delay(10);
-  // We start by connecting to a WiFi network
-  Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("");
-  Serial.print("WiFi connected - ESP IP address: ");
-  Serial.println(WiFi.localIP());
-}
+//For capacitive soil sensor
+const int AirValue = 852;   //you need to replace this value with Value_1
+const int WaterValue = 480;  //you need to replace this value with Value_2
+int soilMoistureValue = 0;
+int soilmoisturepercent= 0;
 
-// This functions is executed when some device publishes a message to a topic that your ESP8266 is subscribed to
-// Change the function below to add logic to your program, so when a device publishes a message to a topic that 
-// your ESP8266 is subscribed you can actually do something
-void callback(String topic, byte* message, unsigned int length) {
-  Serial.print("Message arrived on topic: ");
-  Serial.print(topic);
-  Serial.print(". Message: ");
-  String messageTemp;
-  
-  for (int i = 0; i < length; i++) {
-    Serial.print((char)message[i]);
-    messageTemp += (char)message[i];
-  }
-  Serial.println();
-}
+//KY018 Photo resistor module (currently off)
+//int sensorPin = A0; // select the input pin for the potentiometer
+//int ledPin = 13; // select the pin for the LED
+//int sensorValue = 0; // variable to store the value coming from the sensor
 
-// This functions reconnects your ESP8266 to your MQTT broker
-// Change the function below if you want to subscribe to more topics with your ESP8266 
-void reconnect() {
-  // Loop until we're reconnected
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    // Attempt to connect
-     /*
-     YOU  NEED TO CHANGE THIS NEXT LINE, IF YOU'RE HAVING PROBLEMS WITH MQTT MULTIPLE CONNECTIONS
-     To change the ESP device ID, you will have to give a unique name to the ESP8266.
-     Here's how it looks like now:
-       if (client.connect("ESP8266Client")) {
-     If you want more devices connected to the MQTT broker, you can do it like this:
-       if (client.connect("ESPOffice")) {
-     Then, for the other ESP:
-       if (client.connect("ESPGarage")) {
-      That should solve your MQTT multiple connections problem
+// Initialize DHT sensor.
+DHT dht(DHTPIN, DHTTYPE);
 
-     THE SECTION IN loop() function should match your device name
-    */
-    if (client.connect("ESP8266Client")) {
-      Serial.println("connected");  
-      // Subscribe or resubscribe to a topic
-      // You can subscribe to more topics (to control more LEDs in this example)
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
-      delay(5000);
-    }
-  }
-}
+int status = WL_IDLE_STATUS;
+unsigned long lastSend;
 
-// The setup function sets your DHT sensor, starts the serial communication at a baud rate of 115200
-// Sets your mqtt broker and sets the callback function
-// The callback function is what receives messages and actually controls the LEDs
-void setup() {
-  dht.begin();
-  // Start the DS18B20 sensor
-  sensors.begin();
+void setup()
+{
   Serial.begin(115200);
-  setup_wifi();
-  client.setServer(mqtt_server, 1883);
-  client.setCallback(callback);
-}
+  dht.begin();
+  sensors.begin();
+  pinMode(ULTRASONIC_TRIG_PIN, OUTPUT); // Sets the ULTRASONIC_TRIG_PIN as an Output
+  pinMode(ULTRASONIC_ECHO_PIN, INPUT); // Sets the ULTRASONIC_ECHO_PIN as an Input
+  Serial.begin(9600); // Starts the serial communication
+  WiFi.mode(WIFI_STA); 
+  ThingSpeak.begin(client);  // Initialize ThingSpeak
+  delay(10);
 
-// For this project, you don't need to change anything in the loop function. 
-// Basically it ensures that you ESP is connected to your broker
-void loop() {
-  if (!client.connected()) {
+  InitWiFi();
+  lastSend = 0;
+  }
+  
+void loop()
+{
+  if ( status != WL_CONNECTED ) {
     reconnect();
   }
-  if(!client.loop())
-     /*
-     YOU  NEED TO CHANGE THIS NEXT LINE, IF YOU'RE HAVING PROBLEMS WITH MQTT MULTIPLE CONNECTIONS
-     To change the ESP device ID, you will have to give a unique name to the ESP8266.
-     Here's how it looks like now:
-       client.connect("ESP8266Client");
-     If you want more devices connected to the MQTT broker, you can do it like this:
-       client.connect("ESPOffice");
-     Then, for the other ESP:
-       client.connect("ESPGarage");
-      That should solve your MQTT multiple connections problem
 
-     THE SECTION IN recionnect() function should match your device name
-    */
-    client.connect("ESP8266Client");
-    
-  now = millis();
-  // Publishes new temperature and humidity every 30 seconds
-  if (now - lastMeasure > 10000) 
-  
-  {
-    lastMeasure = now;
-    
-    // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
+  if ( millis() - lastSend > 1000 ) { // Update and send only after 1 seconds
+    getdata();
+    lastSend = millis();
+  }
+  loop();
+}
+
+void getdata()
+{
+    Serial.println("Collecting data.");
+
+    // Publishes new readings after every 'delay'   
     float h = dht.readHumidity();
     // Read temperature as Celsius (the default)
     float t = dht.readTemperature();
-    // Read temperature as Fahrenheit (isFahrenheit = true)
-    float f = dht.readTemperature(true);
 
     //put Sensor insert into soil
     float sensorValue = analogRead(A0);
     soilmoisturepercent = map(sensorValue, AirValue, WaterValue, 0, 100);
-    float s = soilmoisturepercent;
+    float s = soilmoisturepercent;    
 
     //sensor soil temperature code
     sensors.requestTemperatures(); 
     float temperatureC = sensors.getTempCByIndex(0);
-    //float temperatureF = sensors.getTempFByIndex(0);  
- 
+
+    // Clears the ULTRASONIC_TRIG_PIN
+    digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
+    delayMicroseconds(2);
+    
+    // Sets the ULTRASONIC_TRIG_PIN on HIGH state for 10 micro seconds
+    digitalWrite(ULTRASONIC_TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
+    
+    // Reads the ULTRASONIC_ECHO_PIN, returns the sound wave travel time in microseconds
+    duration = pulseIn(ULTRASONIC_ECHO_PIN, HIGH);
+    
+    // Calculating the distance
+    float distance = duration*0.034/2;   
+    
     // Check if any reads failed and exit early (to try again).
-    // 
-    if (isnan(h) || isnan(t) || isnan(f) || isnan(soilmoisturepercent) || isnan(temperatureC)) 
+    if (isnan(h) || isnan(t) || isnan(s) || isnan(temperatureC) || isnan(distance)) 
     {
       Serial.println("Failed to read from sensors!");
       return;
     }
-    
-    // Computes temperature values in Celsius
-    float hic = dht.computeHeatIndex(t, h, false);
-    static char temperatureTemp[7];
-    dtostrf(hic, 6, 2, temperatureTemp);
-    
-    static char humidityTemp[7];
-    dtostrf(h, 6, 2, humidityTemp);
-    
-    static char soilmoist[7];
-    dtostrf(soilmoisturepercent, 6, 2, soilmoist);
 
-    static char soiltemp[7];
-    dtostrf(temperatureC, 6, 2, soiltemp);    
+  // set the fields with the values for thingspeak
+  ThingSpeak.setField(1, t);
+  ThingSpeak.setField(2, h);
+  ThingSpeak.setField(3, s);
+  ThingSpeak.setField(4, temperatureC);
+  ThingSpeak.setField(5, distance);
 
-    //+ "\", \"soiltemperature\" : \"" + String(temperatureC) 
-    
-    String dhtReadings = "{ \"temperature\": \"" + String(temperatureTemp) + "\", \"humidity\" : \"" + String(humidityTemp) + "\", \"soilmoisture\" : \"" + String(soilmoisturepercent) + "\", \"soiltemperature\" : \"" + String(soiltemp) + "\"}";
-    dhtReadings.toCharArray(data, (dhtReadings.length() + 1));
-    
-    client.publish("room/temperature", temperatureTemp);
-    client.publish("room/humidity", humidityTemp);
-    client.publish("room/soilmoisture", soilmoist);
-    client.publish("room/soiltemperature", soiltemp);
-    
-    // Publishes Temperature and Humidity values
-    client.publish("/esp8266/dhtreadings", data);
-    Serial.println(data);
+  // write to the ThingSpeak channel
+  int x = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
+  if(x == 200){
+    Serial.println("Channel update successful.");
+  }
+  else{
+    Serial.println("Problem updating channel. HTTP error code " + String(x));
+  }  
+
+  // for calibrating soil
+  //Serial.print(sensorValue);
+
+  Serial.println("Repeating in 15 seconds");
+  delay(15000);
+}
+
+void InitWiFi()
+{
+  Serial.println("Connecting to AP ...");
+  // attempt to connect to WiFi network
+
+  WiFi.begin(ssid, pass);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("Connected to AP");
+}
+
+
+void reconnect() {
+  // Connect or reconnect to WiFi
+  if(WiFi.status() != WL_CONNECTED){
+    Serial.print("Attempting to connect to SSID: ");
+    Serial.println(SECRET_SSID);
+    while(WiFi.status() != WL_CONNECTED){
+      WiFi.begin(ssid, pass);  // Connect to WPA/WPA2 network. Change this line if using open or WEP network
+      Serial.print(".");
+      delay(5000);     
+    } 
+    Serial.println("\nConnected.");
   }
 }
